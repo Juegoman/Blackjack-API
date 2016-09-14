@@ -25,10 +25,11 @@ MAKE_MOVE_REQUEST = endpoints.ResourceContainer(
 USER_REQUEST = endpoints.ResourceContainer(user_name=messages.StringField(1),
                                            email=messages.StringField(2))
 
-MEMCACHE_MOVES_REMAINING = 'MOVES_REMAINING'
+MEMCACHE_WINRATE = 'WINRATE'
 
-@endpoints.api(name='guess_a_number', version='v1')
-class GuessANumberApi(remote.Service):
+
+@endpoints.api(name='blackjack', version='v1')
+class BlackjackApi(remote.Service):
     """Game API"""
     @endpoints.method(request_message=USER_REQUEST,
                       response_message=StringMessage,
@@ -56,18 +57,17 @@ class GuessANumberApi(remote.Service):
         if not user:
             raise endpoints.NotFoundException(
                     'A User with that name does not exist!')
-        try:
-            game = Game.new_game(user.key, request.min,
-                                 request.max, request.attempts)
-        except ValueError:
-            raise endpoints.BadRequestException('Maximum must be greater '
-                                                'than minimum!')
+        game = Game.new_game(user.key)
+        message = 'Good luck playing blackjack! Your hand is'
+        for card in game.player_cards:
+            message += ' ' + card
+        message += '. Dealer hand is ' + game.dealer_cards[0] + '.'
 
         # Use a task queue to update the average attempts remaining.
         # This operation is not needed to complete the creation of a new game
         # so it is performed out of sequence.
-        taskqueue.add(url='/tasks/cache_average_attempts')
-        return game.to_form('Good luck playing Guess a Number!')
+        taskqueue.add(url='/tasks/cache_average_winrate')
+        return game.to_form(message)
 
     @endpoints.method(request_message=GET_GAME_REQUEST,
                       response_message=GameForm,
@@ -78,7 +78,7 @@ class GuessANumberApi(remote.Service):
         """Return the current game state."""
         game = get_by_urlsafe(request.urlsafe_game_key, Game)
         if game:
-            return game.to_form('Time to make a move!')
+            return game.to_form('Time to make a move! HIT or STAND?')
         else:
             raise endpoints.NotFoundException('Game not found!')
 
@@ -93,22 +93,54 @@ class GuessANumberApi(remote.Service):
         if game.game_over:
             return game.to_form('Game already over!')
 
-        game.attempts_remaining -= 1
-        if request.guess == game.target:
-            game.end_game(True)
-            return game.to_form('You win!')
-
-        if request.guess < game.target:
-            msg = 'Too low!'
+        if game.player_val == 21 and len(game.player_cards) == 2:
+            # player has a blackjack, checking if the dealer has a blackjack.
+            game.reveal()
+            if game.dealer_val == 21 and len(game.dealer_cards) == 2:
+                game.end_game(True, True)
+                return game.to_form("You tied with the Dealer!")
+            else:
+                game.end_game(True)
+                return game.to_form("You win with a blackjack!")
+        if request.move.lower() == 'hit':
+            if game.hit('P'):
+                message = 'Your hand is'
+                for card in game.player_cards:
+                    message += ' ' + card
+                return game.to_form(message)
+            else:
+                game.end_game()
+                message = 'You busted with a value of ' + str(game.player_val)
+                return game.to_form(message)
+        elif request.move.lower() == 'stand':
+            result = game.stand()
+            # result key:
+            # 0 if the dealer won
+            # 1 if the dealer won by blackjack
+            # 2 if a tie
+            # 3 if the dealer busted
+            # 4 if the player won by value.
+            if result == 0:
+                game.end_game()
+                return game.to_form("The dealer has a higher value than you! "
+                                    "You lose!")
+            elif result == 1:
+                game.end_game()
+                return game.to_form("The dealer got a blackjack! You lose!")
+            elif result == 2:
+                game.end_game(True, True)
+                return game.to_form("You tied with the Dealer!")
+            elif result == 3:
+                game.end_game(True)
+                return game.to_form("The Dealer busted! You win!")
+            elif result == 4:
+                game.end_game(True)
+                return game.to_form("You have a higher value than the dealer! "
+                                    "You win!")
+            else:
+                game.to_form("Unknown error: " + str(result))
         else:
-            msg = 'Too high!'
-
-        if game.attempts_remaining < 1:
-            game.end_game(False)
-            return game.to_form(msg + ' Game over!')
-        else:
-            game.put()
-            return game.to_form(msg)
+            return game.to_form('Please enter either HIT or STAND.')
 
     @endpoints.method(response_message=ScoreForms,
                       path='scores',
@@ -133,24 +165,28 @@ class GuessANumberApi(remote.Service):
         return ScoreForms(items=[score.to_form() for score in scores])
 
     @endpoints.method(response_message=StringMessage,
-                      path='games/average_attempts',
-                      name='get_average_attempts_remaining',
+                      path='games/average_winrate',
+                      name='get_average_winrate',
                       http_method='GET')
-    def get_average_attempts(self, request):
-        """Get the cached average moves remaining"""
-        return StringMessage(message=memcache.get(MEMCACHE_MOVES_REMAINING) or '')
+    def get_average_winrate(self, request):
+        """Get the cached average winrate"""
+        return StringMessage(message=memcache.get(MEMCACHE_WINRATE) or '')
 
     @staticmethod
-    def _cache_average_attempts():
-        """Populates memcache with the average moves remaining of Games"""
-        games = Game.query(Game.game_over == False).fetch()
-        if games:
-            count = len(games)
-            total_attempts_remaining = sum([game.attempts_remaining
-                                        for game in games])
-            average = float(total_attempts_remaining)/count
-            memcache.set(MEMCACHE_MOVES_REMAINING,
-                         'The average moves remaining is {:.2f}'.format(average))
+    def _cache_average_winrate():
+        """Populates memcache with the average winrate of Games"""
+        scores = Score.query().fetch()
+        if scores:
+            count = len(scores)
+            total_wins = 0
+            for score in scores:
+                if score.won:
+                    total_wins += 1
+
+            average = float(total_wins)/count
+            memcache.set(MEMCACHE_WINRATE,
+                         'The average winrate is {:.2f}'
+                         .format(average))
 
 
-api = endpoints.api_server([GuessANumberApi])
+api = endpoints.api_server([BlackjackApi])
