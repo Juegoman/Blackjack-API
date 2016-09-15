@@ -2,9 +2,7 @@
 entities used by the Game. Because these classes are also regular Python
 classes they can include methods (such as 'to_form' and 'new_game')."""
 
-import random
-from utils import create_deck
-from utils import calc_val
+from utils import create_deck, calc_val
 from datetime import date
 from protorpc import messages
 from google.appengine.ext import ndb
@@ -14,6 +12,8 @@ class User(ndb.Model):
     """User profile"""
     name = ndb.StringProperty(required=True)
     email = ndb.StringProperty()
+    points = ndb.IntegerProperty(default=0)
+    total_games = ndb.IntegerProperty(default=0)
 
 
 class Game(ndb.Model):
@@ -26,6 +26,23 @@ class Game(ndb.Model):
     dealer_val = ndb.IntegerProperty(indexed=False)
     game_over = ndb.BooleanProperty(required=True, default=False)
     user = ndb.KeyProperty(required=True, kind='User')
+    history = ndb.StringProperty(repeated=True, indexed=False)
+
+    EVENTS = {
+        'START': 'Game Started',
+        'GAME_OVER': 'Game ended',
+        'REVEAL': 'Dealer revealed their hidden card',
+        'STAND': 'Player stands and dealer begins their move',
+        'P_HIT': 'Player hits and draws a card',
+        'D_HIT': 'Dealer hits and draws a card',
+        'P_BUST': 'Player cards over 21 and they busted. They lose.',
+        'D_BUST': 'Dealer cards over 21 and they busted. They lose.',
+        'P_BLK_JK': 'Player has a blackjack! They win!',
+        'D_BLK_JK': 'Dealer has a blackjack! They win!',
+        'P_WIN': 'Player has a higher value than the Dealer and wins.',
+        'D_WIN': 'Dealer has a higher value than the Player and wins.',
+        'TIE': 'Player and dealer have the same value so they tie.'
+    }
 
     @classmethod
     def new_game(cls, user):
@@ -43,6 +60,8 @@ class Game(ndb.Model):
         game.player_val = calc_val(game.player_cards)
         game.dealer_val = calc_val(game.dealer_cards)
 
+        game.history.append('START')
+
         game.put()
         return game
 
@@ -59,11 +78,38 @@ class Game(ndb.Model):
         form.message = message
         return form
 
+    def get_history(self):
+        """Returns a formatted game history."""
+        history = EventForms()
+        for event in self.history:
+            form = EventForm()
+            form.event = event
+            form.description = Game.EVENTS[event]
+            history.events.append(form)
+        return history
+
+    def append_history(self, event):
+        """Appends an event to the game history."""
+        self.history.append(event)
+        self.put()
+
     def end_game(self, won=False, tied=False):
-        """Ends the game - if won is True, the player won or tied. - if won is False,
-        the player lost. If tied is True, then the player tied."""
+        """Ends the game - if won is True, the player won or tied.
+           If won is False, the player lost.
+           If tied is True, then the player tied."""
+        self.history.append('GAME_OVER')
         self.game_over = True
         self.put()
+
+        # Recalculate the user's points
+        user = User.query(User.key == self.user).get()
+        if tied:
+            user.points += 1
+        elif won:
+            user.points += 2
+        user.total_games += 1
+        user.put()
+
         # Add the game to the score 'board'
         score = Score(user=self.user, date=date.today(), won=won, tied=tied)
         score.put()
@@ -73,6 +119,7 @@ class Game(ndb.Model):
             self.dealer_cards.append(self.dealer_hidden)
             self.dealer_hidden = ''
             self.dealer_val = calc_val(self.dealer_cards)
+            self.history.append('REVEAL')
             self.put()
 
     def stand(self):
@@ -84,11 +131,15 @@ class Game(ndb.Model):
            3 if the dealer busted
            4 if the player won by value."""
         dealerTurn = True
+        self.history.append('STAND')
         self.reveal()
+        result = 2
 
         if self.dealer_val == 21:
             # Dealer got a blackjack!
-            return 1
+            result = 1
+            dealerTurn = False
+            self.history.append('D_BLK_JK')
 
         playerCurrVal = self.player_val
         while dealerTurn:
@@ -96,18 +147,27 @@ class Game(ndb.Model):
 
             if dealerCurrVal > playerCurrVal:
                 # Dealer has a higher value than Player! Dealer wins!
-                return 0
+                result = 0
+                dealerTurn = False
+                self.history.append('D_WIN')
             elif dealerCurrVal == playerCurrVal:
                 # Tie between Player and Dealer!
-                return 2
+                result = 2
+                dealerTurn = False
+                self.history.append('TIE')
             elif dealerCurrVal >= 17:
                 # Player has higher value than Dealer! Player wins!
-                return 4
+                result = 4
+                dealerTurn = False
+                self.history.append('P_WIN')
             else:
                 if not self.hit('D'):
                     # Dealer busts! Player wins!
-                    return 3
-        return 2
+                    result = 3
+                    dealerTurn = False
+                    self.history.append('D_BUST')
+        self.put()
+        return result
 
     def hit(self, tgt):
         """tgt should be 'D' for dealer or 'P' for player.
@@ -119,6 +179,7 @@ class Game(ndb.Model):
         if tgt == 'D':
             self.dealer_cards.append(card)
             self.dealer_val = calc_val(self.dealer_cards)
+            self.history.append('D_HIT')
             if self.dealer_val <= 21:
                 result = True
             else:
@@ -127,6 +188,7 @@ class Game(ndb.Model):
         elif tgt == 'P':
             self.player_cards.append(card)
             self.player_val = calc_val(self.player_cards)
+            self.history.append('P_HIT')
             if self.player_val <= 21:
                 result = True
             else:
@@ -185,6 +247,28 @@ class ScoreForms(messages.Message):
     items = messages.MessageField(ScoreForm, 1, repeated=True)
 
 
+class GameForms(messages.Message):
+    """Return multiple GameForms"""
+    items = messages.MessageField(GameForm, 1, repeated=True)
+
+
 class StringMessage(messages.Message):
-    """StringMessage-- outbound (single) string message"""
+    """StringMessage -- outbound (single) string message"""
     message = messages.StringField(1, required=True)
+
+
+class StringMessages(messages.Message):
+    """StringMessages -- outbound string messages"""
+    messages = messages.StringField(1, repeated=True)
+
+
+class EventForm(messages.Message):
+    """EventForm for game history"""
+    event = messages.StringField(1, required=True)
+    description = messages.StringField(2, required=True)
+
+
+class EventForms(messages.Message):
+    """Return Game history events"""
+    events = messages.MessageField(EventForm, 1, repeated=True)
+

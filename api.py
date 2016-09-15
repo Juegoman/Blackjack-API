@@ -12,8 +12,8 @@ from google.appengine.api import memcache
 from google.appengine.api import taskqueue
 
 from models import User, Game, Score
-from models import StringMessage, NewGameForm, GameForm, MakeMoveForm,\
-    ScoreForms
+from models import StringMessage, StringMessages, NewGameForm, GameForm,\
+MakeMoveForm, ScoreForms, GameForms, EventForms
 from utils import get_by_urlsafe
 
 NEW_GAME_REQUEST = endpoints.ResourceContainer(NewGameForm)
@@ -82,6 +82,21 @@ class BlackjackApi(remote.Service):
         else:
             raise endpoints.NotFoundException('Game not found!')
 
+    @endpoints.method(request_message=GET_GAME_REQUEST,
+                      response_message=StringMessage,
+                      path='game/{urlsafe_game_key}',
+                      name='cancel_game',
+                      http_method='DELETE')
+    def cancel_game(self, request):
+        """Delete the requested game."""
+        game = get_by_urlsafe(request.urlsafe_game_key, Game)
+        if game:
+            game.key.delete()
+            return StringMessage(message="Game with key: %s deleted."
+                                 % request.urlsafe_game_key)
+        else:
+            raise endpoints.NotFoundException('Game not found!')
+
     @endpoints.method(request_message=MAKE_MOVE_REQUEST,
                       response_message=GameForm,
                       path='game/{urlsafe_game_key}',
@@ -90,57 +105,68 @@ class BlackjackApi(remote.Service):
     def make_move(self, request):
         """Makes a move. Returns a game state with message"""
         game = get_by_urlsafe(request.urlsafe_game_key, Game)
-        if game.game_over:
-            return game.to_form('Game already over!')
+        if game:
+            if game.game_over:
+                return game.to_form('Game already over!')
 
-        if game.player_val == 21 and len(game.player_cards) == 2:
-            # player has a blackjack, checking if the dealer has a blackjack.
-            game.reveal()
-            if game.dealer_val == 21 and len(game.dealer_cards) == 2:
-                game.end_game(True, True)
-                return game.to_form("You tied with the Dealer!")
+            if game.player_val == 21 and len(game.player_cards) == 2:
+                # player has a blackjack,
+                # checking if the dealer has a blackjack.
+                game.reveal()
+                if game.dealer_val == 21 and len(game.dealer_cards) == 2:
+                    game.append_history('TIE')
+                    game.end_game(True, True)
+                    return game.to_form("You tied with the Dealer!")
+                else:
+                    game.append_history('P_BLK_JK')
+                    game.end_game(True)
+                    return game.to_form("You win with a blackjack!")
+
+            if request.move.lower() == 'hit':
+                if game.hit('P'):
+                    message = 'Your hand is'
+                    for card in game.player_cards:
+                        message += ' ' + card
+                    return game.to_form(message)
+                else:
+                    game.append_history('P_BUST')
+                    game.end_game()
+                    message = 'You busted with a value of ' +\
+                              str(game.player_val)
+                    return game.to_form(message)
+
+            elif request.move.lower() == 'stand':
+                result = game.stand()
+                # result key:
+                # 0 if the dealer won
+                # 1 if the dealer won by blackjack
+                # 2 if a tie
+                # 3 if the dealer busted
+                # 4 if the player won by value.
+                if result == 0:
+                    game.end_game()
+                    return game.to_form("The dealer has a higher value than "
+                                        "you! You lose!")
+                elif result == 1:
+                    game.end_game()
+                    return game.to_form("The dealer got a blackjack!"
+                                        " You lose!")
+                elif result == 2:
+                    game.end_game(True, True)
+                    return game.to_form("You tied with the Dealer!")
+                elif result == 3:
+                    game.end_game(True)
+                    return game.to_form("The Dealer busted! You win!")
+                elif result == 4:
+                    game.end_game(True)
+                    return game.to_form("You have a higher value than the "
+                                        "dealer! You win!")
+                else:
+                    game.to_form("Unknown error: " + str(result))
             else:
-                game.end_game(True)
-                return game.to_form("You win with a blackjack!")
-        if request.move.lower() == 'hit':
-            if game.hit('P'):
-                message = 'Your hand is'
-                for card in game.player_cards:
-                    message += ' ' + card
-                return game.to_form(message)
-            else:
-                game.end_game()
-                message = 'You busted with a value of ' + str(game.player_val)
-                return game.to_form(message)
-        elif request.move.lower() == 'stand':
-            result = game.stand()
-            # result key:
-            # 0 if the dealer won
-            # 1 if the dealer won by blackjack
-            # 2 if a tie
-            # 3 if the dealer busted
-            # 4 if the player won by value.
-            if result == 0:
-                game.end_game()
-                return game.to_form("The dealer has a higher value than you! "
-                                    "You lose!")
-            elif result == 1:
-                game.end_game()
-                return game.to_form("The dealer got a blackjack! You lose!")
-            elif result == 2:
-                game.end_game(True, True)
-                return game.to_form("You tied with the Dealer!")
-            elif result == 3:
-                game.end_game(True)
-                return game.to_form("The Dealer busted! You win!")
-            elif result == 4:
-                game.end_game(True)
-                return game.to_form("You have a higher value than the dealer! "
-                                    "You win!")
-            else:
-                game.to_form("Unknown error: " + str(result))
+                return game.to_form('Please enter either HIT or STAND.')
         else:
-            return game.to_form('Please enter either HIT or STAND.')
+            raise endpoints.NotFoundException("Game not found!")
 
     @endpoints.method(response_message=ScoreForms,
                       path='scores',
@@ -163,6 +189,58 @@ class BlackjackApi(remote.Service):
                     'A User with that name does not exist!')
         scores = Score.query(Score.user == user.key)
         return ScoreForms(items=[score.to_form() for score in scores])
+
+    @endpoints.method(response_message=StringMessages,
+                      path='scores/ranking',
+                      name='get_user_rankings',
+                      http_method='GET')
+    def get_user_rankings(self, request):
+        """Returns all users ranked by performance."""
+        users = User.query().fetch()
+        results = []
+        for user in users:
+            if user.total_games == 0:
+                results.append(('%s has not played any games.' % user.name,
+                                -1))
+            else:
+                winrate = (float(user.points) / (user.total_games * 2)) * 100
+                results.append(('%s has won %d%% of games played' % (user.name,
+                                                                    winrate),
+                                winrate))
+        print results
+        sorted_results = sorted(results,
+                                key=lambda result: result[1])
+        messages = [result[0] for result in sorted_results]
+        messages.reverse()
+        return StringMessages(messages=messages)
+
+    @endpoints.method(request_message=GET_GAME_REQUEST,
+                      response_message=EventForms,
+                      path='game/{urlsafe_game_key}/history',
+                      name='get_game_history',
+                      http_method='GET')
+    def get_game_history(self, request):
+        """Returns the requested game's move history"""
+        game = get_by_urlsafe(request.urlsafe_game_key, Game)
+        if game:
+            history = game.get_history()
+        else:
+            raise endpoints.NotFoundException("Game not found!")
+        return history
+
+    @endpoints.method(request_message=USER_REQUEST,
+                      response_message=GameForms,
+                      path='games/user/{user_name}',
+                      name='get_user_games',
+                      http_method='GET')
+    def get_user_games(self, request):
+        """Returns all of an individual User's games"""
+        user = User.query(User.name == request.user_name).get()
+        if not user:
+            raise endpoints.NotFoundException(
+                'A User with that name does not Exist!')
+        games = Game.query(Game.user == user.key)
+        return GameForms(items=[game.to_form('') for game in games])
 
     @endpoints.method(response_message=StringMessage,
                       path='games/average_winrate',
