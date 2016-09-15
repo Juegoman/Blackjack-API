@@ -1,0 +1,44 @@
+> What additional properties did you add to your models and why?
+      The User model had the points and total_games properties added to
+    facilitate ranking users. The Game model had the most extensive changes.
+    Any properties specific to Guess-A-Number were removed. The properties
+    added to the Game model are the deck, player_cards, dealer_cards,
+    dealer_hidden, player_val, dealer_val, and history.
+      The deck property holds the shuffled array of strings representing cards.
+    The player_cards and dealer_cards properties hold the cards currently in
+    play for their respective players. The dealer_hidden property hold the
+    card that the dealer has face down at the beginning of the game.
+    The player_val and dealer_val properties hold integer representations of
+    the respective player's value of cards in play. The history property holds
+    an array of ordered strings which detail the move history of that
+    specific game.
+      The Game model also has some methods to facilitate the flow of the game.
+    get_history() and append_history() deal with the game history. reveal(),
+    stand(), and hit() all perform functions to update the state of the game
+    upon various events.
+      The Score model had any properties specific to Guess-A-Number removed.
+    The tied attribute was added to address the possibility of ties in
+    blackjack.
+> What were some of the trade-offs or struggles you faced when
+implementing the new game logic?
+      One struggle that I had was when I was deciding how to store the cards,
+    more specifically the deck, in a manner that the datastore would be able
+    to handle. In blackjack.py, I had already implemented blackjack in a
+    console based python program. In that program I had stored the state of the
+    deck in a Deck object with it's own helper methods. To port the deck to the
+    API I had to simplify the deck to be just a string array within the game
+    state model. Granted, the Deck object in blackjack.py was merely a wrapper
+    for a string array as well. I could not port the helper methods that the
+    Deck object had to the API, so working with the deck would be a bit more
+    cumbersome, but still manageable.
+      Another issue that I had when porting the game to the API was how much of
+    the game logic should end up in the API, and how much should end up in the
+    model's functions. The separation I settled on was to have the handling of
+    the player's moves within the make_move API function, and have the handling
+    of changing the model's state and the handling of the dealer's AI within
+    the model. The functions reveal(), hit(), and end_game() are examples of
+    changing the state, and the stand() function handles the dealer's AI.
+      I decided that the get_high_scores endpoint would not necessarily make
+    sense in blackjack, seeing as within a game you can only either win or lose
+    (technically you can also tie, but in parts of the code it is lumped
+    together with winning).

@@ -5,7 +5,6 @@ move game logic to another file. Ideally the API will be simple, concerned
 primarily with communication to/from the API's users."""
 
 
-import logging
 import endpoints
 from protorpc import remote, messages
 from google.appengine.api import memcache
@@ -13,7 +12,7 @@ from google.appengine.api import taskqueue
 
 from models import User, Game, Score
 from models import StringMessage, StringMessages, NewGameForm, GameForm,\
-MakeMoveForm, ScoreForms, GameForms, EventForms
+                   MakeMoveForm, ScoreForms, GameForms, EventForms
 from utils import get_by_urlsafe
 
 NEW_GAME_REQUEST = endpoints.ResourceContainer(NewGameForm)
@@ -172,7 +171,7 @@ class BlackjackApi(remote.Service):
                       path='scores',
                       name='get_scores',
                       http_method='GET')
-    def get_scores(self, request):
+    def get_scores(self):
         """Return all scores"""
         return ScoreForms(items=[score.to_form() for score in Score.query()])
 
@@ -194,7 +193,7 @@ class BlackjackApi(remote.Service):
                       path='scores/ranking',
                       name='get_user_rankings',
                       http_method='GET')
-    def get_user_rankings(self, request):
+    def get_user_rankings(self):
         """Returns all users ranked by performance."""
         users = User.query().fetch()
         results = []
@@ -205,11 +204,9 @@ class BlackjackApi(remote.Service):
             else:
                 winrate = (float(user.points) / (user.total_games * 2)) * 100
                 results.append(('%s has won %d%% of games played' % (user.name,
-                                                                    winrate),
+                                                                     winrate),
                                 winrate))
-        print results
-        sorted_results = sorted(results,
-                                key=lambda result: result[1])
+        sorted_results = sorted(results, key=lambda result: result[1])
         messages = [result[0] for result in sorted_results]
         messages.reverse()
         return StringMessages(messages=messages)
