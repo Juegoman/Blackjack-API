@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-`
-"""api.py - Create and configure the Game API exposing the resources.
-This can also contain game logic. For more complex games it would be wise to
-move game logic to another file. Ideally the API will be simple, concerned
-primarily with communication to/from the API's users."""
+"""api.py - endpoints for the blackjack application."""
 
 
 import endpoints
@@ -11,8 +8,16 @@ from google.appengine.api import memcache
 from google.appengine.api import taskqueue
 
 from models import User, Game, Score
-from models import StringMessage, StringMessages, NewGameForm, GameForm,\
-                   MakeMoveForm, ScoreForms, GameForms, EventForms
+from models import (
+    StringMessage,
+    StringMessages,
+    NewGameForm,
+    GameForm,
+    MakeMoveForm,
+    ScoreForms,
+    GameForms,
+    EventForms
+)
 from utils import get_by_urlsafe
 
 NEW_GAME_REQUEST = endpoints.ResourceContainer(NewGameForm)
@@ -90,9 +95,12 @@ class BlackjackApi(remote.Service):
         """Delete the requested game."""
         game = get_by_urlsafe(request.urlsafe_game_key, Game)
         if game:
-            game.key.delete()
-            return StringMessage(message="Game with key: %s deleted."
-                                 % request.urlsafe_game_key)
+            if not game.game_over:
+                game.key.delete()
+                return StringMessage(message="Game with key: %s deleted."
+                                     % request.urlsafe_game_key)
+            else:
+                raise endpoints.ForbiddenException('Game is already over.')
         else:
             raise endpoints.NotFoundException('Game not found!')
 
@@ -106,7 +114,7 @@ class BlackjackApi(remote.Service):
         game = get_by_urlsafe(request.urlsafe_game_key, Game)
         if game:
             if game.game_over:
-                return game.to_form('Game already over!')
+                raise endpoints.ForbiddenException('Game is already over.')
 
             if game.player_val == 21 and len(game.player_cards) == 2:
                 # player has a blackjack,
@@ -171,7 +179,7 @@ class BlackjackApi(remote.Service):
                       path='scores',
                       name='get_scores',
                       http_method='GET')
-    def get_scores(self):
+    def get_scores(self, request):
         """Return all scores"""
         return ScoreForms(items=[score.to_form() for score in Score.query()])
 
@@ -193,7 +201,7 @@ class BlackjackApi(remote.Service):
                       path='scores/ranking',
                       name='get_user_rankings',
                       http_method='GET')
-    def get_user_rankings(self):
+    def get_user_rankings(self, request):
         """Returns all users ranked by performance."""
         users = User.query().fetch()
         results = []
@@ -231,12 +239,13 @@ class BlackjackApi(remote.Service):
                       name='get_user_games',
                       http_method='GET')
     def get_user_games(self, request):
-        """Returns all of an individual User's games"""
+        """Returns all of an individual User's active games"""
         user = User.query(User.name == request.user_name).get()
         if not user:
             raise endpoints.NotFoundException(
                 'A User with that name does not Exist!')
-        games = Game.query(Game.user == user.key)
+        games = Game.query(Game.user == user.key)\
+                    .filter(Game.game_over == False)
         return GameForms(items=[game.to_form('') for game in games])
 
     @endpoints.method(response_message=StringMessage,

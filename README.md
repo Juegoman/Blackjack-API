@@ -18,6 +18,11 @@ Many different blackjack games can be played by many different Users at any
 given time. Each game can be retrieved or played by using the path parameter
 `urlsafe_game_key`.
 
+##How to Play:
+ - First a user should be created from the create_user endpoint.
+ - A game can be created using the create_game endpoint. Remember to save the urlsafe_key.
+ - Finally a game can be played by going to the make_move endpoint and submitting the urlsafe_key and your move, either 'hit' or 'stand'.
+
 ##Score Keeping:
 Since Blackjack doesn't really have a "score", in the API a player's rank is determined by their win rate.
 Wins are awarded 2 points and ties are awarded 1 point.

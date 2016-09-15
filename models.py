@@ -29,12 +29,13 @@ class Game(ndb.Model):
     history = ndb.StringProperty(repeated=True, indexed=False)
 
     EVENTS = {
-        'START': 'Game Started',
+        'START': "Game Started with player cards {} and {}. The dealer's shown"
+                 " card is {} and their hidden card is {}.",
         'GAME_OVER': 'Game ended',
-        'REVEAL': 'Dealer revealed their hidden card',
-        'STAND': 'Player stands and dealer begins their move',
-        'P_HIT': 'Player hits and draws a card',
-        'D_HIT': 'Dealer hits and draws a card',
+        'REVEAL': 'Dealer revealed their hidden card {}.',
+        'STAND': 'Player stands and dealer begins their move.',
+        'P_HIT': 'Player hits and draws {}',
+        'D_HIT': 'Dealer hits and draws {}',
         'P_BUST': 'Player cards over 21 and they busted. They lose.',
         'D_BUST': 'Dealer cards over 21 and they busted. They lose.',
         'P_BLK_JK': 'Player has a blackjack! They win!',
@@ -50,17 +51,24 @@ class Game(ndb.Model):
         game = Game(user=user,
                     game_over=False)
         game.deck = create_deck()
+        start_string = 'START'
 
-        for x in range(0, 2):
-            game.player_cards.append(game.deck.pop())
+        for x in range(2):
+            card = game.deck.pop()
+            start_string += '.' + card
+            game.player_cards.append(card)
 
-        game.dealer_cards.append(game.deck.pop())
-        game.dealer_hidden = game.deck.pop()
+        card = game.deck.pop()
+        start_string += '.' + card
+        game.dealer_cards.append(card)
+        card = game.deck.pop()
+        start_string += '.' + card
+        game.dealer_hidden = card
 
         game.player_val = calc_val(game.player_cards)
         game.dealer_val = calc_val(game.dealer_cards)
 
-        game.history.append('START')
+        game.history.append(start_string)
 
         game.put()
         return game
@@ -83,8 +91,24 @@ class Game(ndb.Model):
         history = EventForms()
         for event in self.history:
             form = EventForm()
-            form.event = event
-            form.description = Game.EVENTS[event]
+            # certain events have relevant cards attached to them,
+            # the following procedure separates them.
+            split_event = event.split('.')
+            event_name = split_event[0]
+            form.event = event_name
+            if event_name == "START":
+                form.description = Game.EVENTS[event_name].format(
+                    split_event[1],
+                    split_event[2],
+                    split_event[3],
+                    split_event[4]
+                )
+            elif event_name == "REVEAL" or 'HIT' in event_name:
+                form.description = Game.EVENTS[event_name].format(
+                    split_event[1]
+                )
+            else:
+                form.description = Game.EVENTS[event_name]
             history.events.append(form)
         return history
 
@@ -117,9 +141,10 @@ class Game(ndb.Model):
     def reveal(self):
         if self.dealer_hidden:
             self.dealer_cards.append(self.dealer_hidden)
+            reveal_string = 'REVEAL.' + self.dealer_hidden
             self.dealer_hidden = ''
             self.dealer_val = calc_val(self.dealer_cards)
-            self.history.append('REVEAL')
+            self.history.append(reveal_string)
             self.put()
 
     def stand(self):
@@ -174,12 +199,11 @@ class Game(ndb.Model):
            Draw a card and recalculate value.
            If value is over 21 returns False, otherwise returns True."""
         card = self.deck.pop()
-
-        result = None
+        event_string = '.' + card
         if tgt == 'D':
             self.dealer_cards.append(card)
             self.dealer_val = calc_val(self.dealer_cards)
-            self.history.append('D_HIT')
+            self.history.append('D_HIT' + event_string)
             if self.dealer_val <= 21:
                 result = True
             else:
@@ -188,7 +212,7 @@ class Game(ndb.Model):
         elif tgt == 'P':
             self.player_cards.append(card)
             self.player_val = calc_val(self.player_cards)
-            self.history.append('P_HIT')
+            self.history.append('P_HIT' + event_string)
             if self.player_val <= 21:
                 result = True
             else:
